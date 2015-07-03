@@ -1,0 +1,16 @@
+{
+  "name": "StuckHere",
+  "description": "Near chat application.",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "start": "node app.js"
+  },
+  "dependencies": {
+    "express": "^4.13.0",
+    "morgan": "^1.6.0",
+    "body-parser": "^1.13.1",
+    "mongodb": "^2.0.35",
+    "node-gcm": "^0.9.15"
+  }
+}
