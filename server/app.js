@@ -1,21 +1,9 @@
 var express = require('express');
 var logger = require('morgan');
 var bodyParser = require('body-parser');
+var fcaller = require("./fcaller.js");
 var gcm = require('node-gcm');
 var sender = new gcm.Sender('AIzaSyB1TljqwcTlwSSAJn5gvhOJzOwZsQHeUpk');
-var regIds = [
-    "fBNCjK4hSKU:APA91bHNrAw60J52S6rdsX2Lux3uTiR8SuPhrF5MbJl-CtsUibg6rmdYSigRIbtSBpjalVTkZ6anoaUAeumjmL7zxEuSto2ITo1Sy4jLp4HzyZtOMxj0c0iKhvgjzqSttNiqNZcEqWaq",
-    "dgF4bbsHuw8:APA91bELGyHFcnkVO9fNYFOFSg6CRbtgiZDgaUO3m8GGfe-UUh3bdKlofxqDf5sSXZTaO8QdYQCWn_V7BerAl0VAWi92r34FfqPJJCjOu1QstCiLbL2cFkoWjRPb4win8AR9nLw_Osj3",
-    "fBNCjK4hSKU:APA91bHNrAw60J52S6rdsX2Lux3uTiR8SuPhrF5MbJl-CtsUibg6rmdYSigRIbtSBpjalVTkZ6anoaUAeumjmL7zxEuSto2ITo1Sy4jLp4HzyZtOMxj0c0iKhvgjzqSttNiqNZcEqWaa"
-];
-
-var mongodb;
-require('mongodb').MongoClient.connect('mongodb://localhost:27017/stuckhere', function (err, db) {
-    if (err) {
-        throw err;
-    }
-    mongodb = db;
-});
 
 var app = express();
 app.use(logger('dev'));
@@ -23,8 +11,21 @@ app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: false }));
 
 // Make our db accessible to our router
-app.use(function(req, res, next){
-    req.db = mongodb;
+//app.use(function (req, res, next) {
+//    req.db = db;
+//    next();
+//});
+
+// session check
+app.use(function (req, res, next) {
+    var session_key = req.headers["session_key"];
+    if (!session_key) {
+        return next();
+    }
+
+    // valid check and get my id
+    var myId = "1";
+    req.myId = myId;
     next();
 });
 
@@ -32,28 +33,37 @@ app.get('/', function (req, res, next) {
     res.json({ "hello": 'world' });
 });
 
-app.put('/location', function (req, res, next) {
-    var identity = req.body.identity;
-    var latitude = Number(req.body.latitude);
-    var longitude = Number(req.body.longitude);
+function isValidLocation(location) {
+    return (typeof(location.latitude) === "number" &&
+        typeof(location.longitude) === "number");
+}
 
-    // TODO auth
-    if (identity === undefined || identity === '') {
-        var err = new Error('Forbidden');
-        err.status = 403;
+app.put('/location', function (req, res, next) {
+    var myId = req.myId;
+    var location = req.body.location;
+
+    if (myId === undefined) {
+        var err = new Error('Unauthorized');
+        err.status = 401;
         return next(err);
     }
 
-    if (isNaN(latitude) || isNaN(longitude)) {
+    if (location === undefined) {
         var err = new Error('Bad Request');
         err.status = 400;
         return next(err);
     }
 
-    // update current location.
-    var db = req.db;
-    db.collection("location").save({ "_id": identity, "latitude": latitude, "longitude": longitude }, function (err, result) {
+    // business layer
+    if (!isValidLocation(location)) {
+        var err = new Error('Bad Request');
+        err.status = 400;
+        return next(err);
+    }
+
+    updateUserLocation(myId, location, function (err, result) {
         if (err) { return next(err); }
+
         var result = result.result;
         if (result.upserted) {
             return res.sendStatus(201);
@@ -67,89 +77,135 @@ app.put('/location', function (req, res, next) {
     });
 });
 
-app.post('/chat', function (req, res, next) {
-    var identity = req.body.identity;
-    var latitude = Number(req.body.latitude);
-    var longitude = Number(req.body.longitude);
-    var title = req.body.title;
 
-    // TODO auth
-    if (identity === undefined || identity === '') {
-        var err = new Error('Forbidden');
-        err.status = 403;
+// function createChatRoomTemporary(myId, location, )
+app.post('/chat', function (req, res, next) {
+    var myId = req.myId;
+    var title = req.body.title;
+    var location = req.body.location;
+
+    if (myId === undefined) {
+        var err = new Error('Unauthorized');
+        err.status = 401;
         return next(err);
     }
 
-    if (isNaN(latitude) || isNaN(longitude) || title === undefined) {
+    if (title === undefined || location === undefined) {
         var err = new Error('Bad Request');
         err.status = 400;
         return next(err);
     }
 
-    var db = req.db;
-    // update current location.
-    db.collection('location').save({ "_id": identity, "latitude": latitude, "longitude": longitude }, function (err) {
+    // business layer
+    if (!isValidLocation(location)) {
+        var err = new Error('Bad Request');
+        err.status = 400;
+        return next(err);
+    }
+
+    updateUserLocation(myId, location, function (err) {
         if (err) { return next(err); }
-        // modify where for get near users
-        // fingerprint
-        var where = {
-            "_id": { "$ne": identity },
-            "latitude": { "$gt": latitude - 0.003, "$lt": latitude + 0.003 },
-            "longitude": { "$gt": longitude - 0.003, "$lt": longitude + 0.003 }
-        }
-        db.collection('location').find(where).toArray(function (err, arr) {
-            var nears = [];
-            var members = [{ "_id": identity }];
-            arr.forEach(function (item) {
-                var dist = calDistance(latitude, longitude, item.latitude, item.longitude);
-                if (dist <= 250) {
-                    nears.push(item._id);
-                    members.push({ "_id": item._id })
-                }
+
+        findMembersNearByMyLocation(myId, location, function (err, nears) {
+            if (err) { return next(err); }
+
+            var members = [ myId ];
+            nears.forEach(function (member) {
+                members.push(member._id);
             });
 
-            // create chat room.
-            var chatroom = {
-                "title": title,
-                "owner": identity,
-                "members": members,
-                "active": false,
-                "reg_date": new Date()
-            };
-            db.collection('chatroom').insert(chatroom, function (err) {
-                if (err) {
-                    if (err.code == 11000) {
-                        err.status = 412;
-                    }
-                    return next(err);
-                }
-                var message = new gcm.Message();
-                message.addData('message', 'hello node server!');
-                sender.send(message, regIds, function (err, result) {
-                    if (err) {
-                        return next(err);
-                    }
-                    console.log(result);
-                    res.status(201).json(nears);
-                });
+            createChatRoom(myId, title, members, function (err, result) {
+                if (err) { return next(err); }
+
+                res.status(201).json(result.ops);
             });
         });
     });
 });
 
-app.delete('/chat', function (req, res, next) {
-    var identity = req.body.identity;
+//                var message = new gcm.Message();
+//                message.addData('message', 'hello node server!');
+//                sender.send(message, regIds, function (err, result) {
+//                    if (err) {
+//                        return next(err);
+//                    }
+//                    console.log(result);
+//                    res.status(201).json(nears);
+//                });
+function sendToGCM(regIds, data, callback) {
+    var message = new gcm.Message();
+    message.addData(data);
+    sender.send(message, regIds, callback);
+}
 
-    // TODO auth
-    if (identity === undefined || identity === '') {
-        var err = new Error('Forbidden');
-        err.status = 403;
+app.put('/chat/:id', function (req, res, next) {
+    var myId = req.myId;
+    var chatRoomId = req.params.id;
+
+    if (myId === undefined) {
+        var err = new Error('Unauthorized');
+        err.status = 401;
         return next(err);
     }
 
-    var db = req.db;
-    // delete chat room.
-    db.collection('chatroom').remove({ "_id": identity }, function (err, result) {
+    if (chatRoomId === undefined) {
+        var err = new Error('Bad Request');
+        err.status = 400;
+        return next(err);
+    }
+
+    getChatRoom(chatRoomId, function (err, chatRoom) {
+        if (err) { return next(err); }
+
+        if (chatRoom === null || chatRoom.owner != myId) {
+            var err = new Error('Not Found');
+            err.status = 404;
+            return next(err);
+        }
+
+        activeChatRoom(chatRoom, function (err, result) {
+            if (err) { return next(err); }
+
+            var result = result.result;
+            if (result.nModified == 1) {
+//                getMembers(chatRoom.members, function (err, members) {
+//                    var regIds = [];
+//                    members.forEach(function (member) {
+//                        if (member._id != myId) {
+//                            regIds.push(member.regId);
+//                        }
+//                    });
+//                    console.log("send: ");
+//                    console.log(members);
+//                    sendToGCM(regIds, { "message": "hello" }, function (err, result) {
+//                        if (err) { return next(err); }
+//                        return res.sendStatus(204);
+//                    });
+//                });
+            }
+
+            res.sendStatus(304);
+        });
+    });
+});
+
+app.delete('/chat/:id', function (req, res, next) {
+    var myId = req.myId;
+    var chatRoomId = req.params.id;
+
+    if (myId === undefined) {
+        var err = new Error('Unauthorized');
+        err.status = 401;
+        return next(err);
+    }
+
+    if (chatRoomId === undefined) {
+        var err = new Error('Bad Request');
+        err.status = 400;
+        return next(err);
+    }
+
+    daleteChatRoom(myId, chatRoomId, function (err, result) {
         if (err) { return next(err); }
         var result = result.result;
 
@@ -169,16 +225,90 @@ app.use(function (req, res, next) {
 });
 
 // error handlers
-app.use(function (err, req, res, next) {
+app.use(function (err, req, res) {
     res.status(err.status || 500);
     res.send(err.stack);
 });
 
-app.listen(3000);
+
+/////////////////
+
+require('mongodb').MongoClient.connect('mongodb://localhost:27017/stuckhere', function (err, _db) {
+    if (err) {
+        throw err;
+    }
+    db = _db;
+    app.listen(3000);
+});
 
 
+////////////////
+var db;
+var ObjectId = require('mongodb').ObjectId;
 
-function calDistance(lat1, lng1, lat2, lng2) {
+function updateUserLocation(id, location, callback) {
+    db.collection('location').update(
+        { "_id": id },
+        { "$set": location },
+        { "upsert": 1 },
+        callback);
+}
+
+function findLocations(where, callback) {
+    db.collection('location').find(where).toArray(callback);
+}
+
+
+function findMembersNearByMyLocation(id, mylocation, callback) {
+    var latitude = mylocation.latitude;
+    var longitude = mylocation.longitude;
+    var where = {
+        "_id": { "$ne": id },
+        "latitude": { "$gt": latitude - 0.003, "$lt": latitude + 0.003 },
+        "longitude": { "$gt": longitude - 0.003, "$lt": longitude + 0.003 }
+    };
+
+    findLocations(where, function (err, locations) {
+        if (err) { return callback(err); }
+        var nears = chooseLocationsByDistance(mylocation, locations, 250);
+
+        callback(null, nears);createChatRoom
+    });
+}
+
+function createChatRoom(owner, title, members, callback) {
+    var chatroom = {
+        "owner": owner,
+        "title": title,
+        "members": members,
+        "active": false,
+        "reg_date": new Date()
+    };
+    db.collection('chatroom').insert(chatroom, callback);
+}
+
+function activeChatRoom(chatRoom, callback) {
+    db.collection('chatroom').update(
+        chatRoom,
+        { "$set": { "active": true } },
+        callback);
+}
+
+function daleteChatRoom(owner, chatRoomId, callback) {
+    db.collection('chatroom').remove({ "_id": ObjectId(chatRoomId), "owner": owner }, callback);
+}
+
+function getChatRoom(chatRoomId, callback) {
+    db.collection('chatroom').findOne({ "_id": ObjectId(chatRoomId) }, callback);
+}
+////////////////
+
+function calDistance(mylocation, location) {
+    var lat1 = mylocation.latitude;
+    var lng1 = mylocation.longitude;
+    var lat2 = location.latitude;
+    var lng2 = location.longitude;
+
     var theta, dist;
     theta = lng1 - lng2;
     dist = (Math.sin(deg2rad(lat1)) * Math.sin(deg2rad(lat2)))
@@ -199,4 +329,15 @@ function deg2rad(deg) {
 
 function rad2deg(rad) {
     return rad * 180.0 / Math.PI;
+}
+
+function chooseLocationsByDistance(mylocation, locations, dist) {
+    var result = [];
+    locations.forEach(function (location) {
+        var _dist = calDistance(mylocation, location);
+        if (_dist <= dist) {
+            result.push(location);
+        }
+    });
+    return result;
 }

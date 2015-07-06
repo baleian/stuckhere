@@ -8,6 +8,8 @@ function Fcaller() {
     }
 
     this.functionQueue = [];
+    this.error = function () {};
+    this.success = function () {};
 };
 
 Fcaller.prototype.push = function () {
@@ -40,6 +42,20 @@ Fcaller.prototype.submit = function (fn) {
     }
 
     this.next();
+};
+
+Fcaller.prototype.onError = function (callback) {
+    if (typeof(callback) !== "function") {
+        throw new Error("The first argument must be a function.")
+    }
+    this.error = callback;
+};
+
+Fcaller.prototype.onSuccess = function (callback) {
+    if (typeof(callback) !== "function") {
+        throw new Error("The first argument must be a function.")
+    }
+    this.success = callback;
 };
 
 module.exports = Fcaller;

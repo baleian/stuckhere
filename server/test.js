@@ -5,10 +5,12 @@ var fcaller = require("./fcaller.js");
 
 var caller = new fcaller();
 this.next = "global";
+var teststr = "teststr";
 
 function aaa(id, pw, callback) {
     console.log("call aaa");
     console.log("id: " + id + ", pw: " + pw);
+    console.log(teststr);
     var userinfo = {
         "regid": "abcd1234!@#$"
     };
@@ -59,3 +61,38 @@ caller.submit(function (err) {
 //var cc = new CC();
 //caller.push(cc.aaa.bind(cc));
 //caller.next();
+
+
+
+
+var caller = new fcaller();
+
+caller.push(updateUserLocation, db, identity, latitude, longitude, function (err) {
+    if (err) { return caller.error(err); }
+    caller.next();
+});
+
+caller.push(findMembersNearByMe, db, identity, latitude, longitude, function (err, nears) {
+    if (err) { return caller.error(err); }
+    caller.next(db, title, identity, nears);
+});
+
+caller.push(createChatRoom, function (err) {
+    if (err) {
+        if (err.code == 11000) {
+            err.status = 412;
+        }
+        return caller.error(err);
+    }
+    caller.success(nears);
+});
+
+caller.onError(function (err) {
+    next(err);
+});
+
+caller.onSuccess(function (result) {
+    res.status(201).json(result);
+});
+
+caller.submit(identity, latitude, longitude, title);
